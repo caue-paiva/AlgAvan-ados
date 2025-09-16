@@ -12,34 +12,17 @@ LEVEL_PRODUCTIVITY = {
     "Lenda": 2.0,
 }
 
-def compute_bottom_levels(quests, deps, succ):
-    """BL iterativo no DAG: bl[u] = T[u] se folha, senão T[u] + max(bl[v])"""
-    indeg = {q: len(deps.get(q, [])) for q in quests}
-    q0 = deque([q for q in quests if indeg[q] == 0])
-    topo = []
-    while q0:
-        u = q0.popleft()
-        topo.append(u)
-        for v in succ[u]:
-            indeg[v] -= 1
-            if indeg[v] == 0:
-                q0.append(v)
-    bl = {q: quests[q][0] for q in quests}
-    for u in reversed(topo):
-        if succ[u]:
-            bl[u] = quests[u][0] + max(bl[v] for v in succ[u])
-    return bl
-
 def solve_case():
     N, M = map(int, sys.stdin.readline().split())
 
-    heroes = []
-    prod = []
+    # heróis
+    heroes, prod = [], []
     for _ in range(N):
         name, level = sys.stdin.readline().split()
         heroes.append(name)
         prod.append(LEVEL_PRODUCTIVITY[level])
 
+    # quests e grafo
     quests = {}                      # q -> (T, deps)
     deps = defaultdict(list)
     succ = defaultdict(list)
@@ -65,51 +48,50 @@ def solve_case():
         for v in succ[u]:
             outdeg[u] += 1
 
-    # bottom-level para desempate
-    bl = compute_bottom_levels(quests, deps, succ)
-
-    # raízes e conjunto de heróis ativos: só os K mais rápidos trabalham
+    # raízes
     roots = [q for q in q_ids if indeg[q] == 0]
     K = min(len(roots), N)
+
+    # heróis ativos = K mais rápidos
     active_heroes = sorted(range(N), key=lambda h: prod[h], reverse=True)[:K]
     active_set = set(active_heroes)
 
-    # prioridade de tarefa: (-outdeg, -BL, -T, ready_ts, q)
+    # estruturas
+    # ready (t>0): (-outdeg, ready_ts, T, q)
     ready = []
-
-    # t = 0: atribuir as K melhores raízes aos K heróis mais rápidos
-    root_items = []
-    for q in roots:
-        Tq = quests[q][0]
-        root_items.append((-outdeg[q], -bl[q], -Tq, 0.0, q))
-    heapq.heapify(root_items)
-
-    running = []         # (t_finish, h, q)
+    running = []          # (t_finish, h, q)
     hero_free_at = [0.0] * N
+
     assign = [[] for _ in range(N)]
     q_finish = {}
     t = 0.0
 
-    # pega até K raízes para iniciar
+    # ---- t = 0: emparelha K raízes com K heróis mais rápidos
+    # chave para as raízes: (-outdeg, -T, id)
+    roots_items = [(-outdeg[q], -quests[q][0], q) for q in roots]
+    heapq.heapify(roots_items)
+
     for h in active_heroes:
-        if not root_items:
+        if not roots_items:
             break
-        neg_od, neg_bl, neg_T, ts, q = heapq.heappop(root_items)
+        neg_od, neg_T, q = heapq.heappop(roots_items)
         Tq = quests[q][0]
         t_fin = t + Tq / prod[h]
         hero_free_at[h] = t_fin
         heapq.heappush(running, (t_fin, h, q))
         assign[h].append(q)
 
-    # raízes restantes entram em ready
-    while root_items:
-        heapq.heappush(ready, heapq.heappop(root_items))
+    # raízes restantes entram no ready com ts=0
+    while roots_items:
+        neg_od, neg_T, q = heapq.heappop(roots_items)
+        heapq.heappush(ready, (-neg_od, 0.0, -neg_T, q))  # (-outdeg, ts, T, q)
 
-    # coloca no ready quaisquer tarefas não raízes cuja indegree tenha virado 0 ao longo do processo
-    # (para este problema, só acontece após as primeiras conclusões)
+    def push_ready(q, ts):
+        Tq = quests[q][0]
+        heapq.heappush(ready, (-outdeg[q], ts, Tq, q))
 
     def best_wait_eft(q, p_now):
-        """melhor EFT esperando um herói ocupado mais rápido"""
+        """melhor EFT esperando um herói ocupado mais rápido que p_now"""
         Tq = quests[q][0]
         best = float('inf')
         for t_av, h_occ, _ in running:
@@ -123,7 +105,7 @@ def solve_case():
         if not running:
             break
 
-        # processa batelada de término
+        # ---- processa batelada de término
         t_first, h_fin, q_fin = heapq.heappop(running)
         t = t_first
         batch = [(h_fin, q_fin)]
@@ -131,40 +113,38 @@ def solve_case():
             _, h2, q2 = heapq.heappop(running)
             batch.append((h2, q2))
 
-        # marcar conclusões e liberar sucessores
+        # libera sucessores e marca conclusões
         for h_done, q_done in batch:
             hero_free_at[h_done] = t
             q_finish[q_done] = t
             for s in succ[q_done]:
                 indeg[s] -= 1
                 if indeg[s] == 0:
-                    Ts = quests[s][0]
-                    heapq.heappush(ready, (-outdeg[s], -bl[s], -Ts, t, s))
+                    push_ready(s, t)
 
-        # apenas heróis ativos que acabaram de ficar livres em t
-        just_freed = sorted([h for h, _ in batch if h in active_set], key=lambda h: prod[h], reverse=True)
+        # ---- heróis ativos livres em t (inclui quem já estava ocioso)
+        free_now = [h for h in active_set if hero_free_at[h] <= t + EPS]
+        free_now.sort(key=lambda h: prod[h], reverse=True)
 
         # cada herói pega no máximo 1 tarefa neste evento
         deferred = []
-        for h in just_freed:
+        for h in free_now:
             if not ready:
                 continue
             p_now = prod[h]
             picked = None
             buf = []
 
+            # tenta pegar o topo; se "vale esperar", adia e olha a próxima
             while ready:
-                neg_od, neg_bl, neg_T, ts, q = heapq.heappop(ready)
-                Tq = quests[q][0]
+                neg_od, tsr, Tq, q = heapq.heappop(ready)
                 finish_now = t + Tq / p_now
                 wait_eft = best_wait_eft(q, p_now)
-
-                # só adia se houver outra tarefa pronta para evitar ociosidade
-                if wait_eft + EPS < finish_now and len(ready) >= 1:
-                    buf.append((neg_od, neg_bl, neg_T, ts, q))
+                if wait_eft + EPS < finish_now:
+                    buf.append((neg_od, tsr, Tq, q))  # adia
                     continue
                 else:
-                    picked = (neg_od, neg_bl, neg_T, ts, q)
+                    picked = (neg_od, tsr, Tq, q)
                     break
 
             # devolve as adiadas
@@ -174,19 +154,19 @@ def solve_case():
             if picked is None:
                 continue
 
-            neg_od, neg_b, neg_T, ts, q = picked
-            Tq = quests[q][0]
+            neg_od, tsr, Tq, q = picked
             t_fin = t + Tq / p_now
             hero_free_at[h] = t_fin
             heapq.heappush(running, (t_fin, h, q))
             assign[h].append(q)
 
+        # devolve adiadas ao ready
         for item in deferred:
             heapq.heappush(ready, item)
 
-    # saída
+    # ---- saída
     for h in range(N):
-        tasks_sorted = sorted(assign[h])
+        tasks_sorted = sorted(assign[h])  # juiz costuma querer por id asc
         print(f"{heroes[h]} = " + "{" + ",".join(map(str, tasks_sorted)) + "}")
     makespan = max(q_finish.values()) if q_finish else 0.0
     print(f"Tempo mínimo: {makespan:.2f}")
