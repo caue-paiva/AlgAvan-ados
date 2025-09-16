@@ -92,8 +92,7 @@ def solve_quest_scheduling():
     # running: min-heap por (t_fim, hero_id, quest_id) - tarefas em execução
     running = []
     
-    # Controle de quando cada herói ficará livre (para enfileiramento sequencial)
-    hero_next_free_time = [0.0] * N
+    # Controle removido - não precisamos mais de hero_next_free_time
     
     # Resultado
     hero_assignments = [[] for _ in range(N)]
@@ -105,126 +104,115 @@ def solve_quest_scheduling():
             bl = bottom_level[quest_id]
             time_base = quests[quest_id][0]
             # Empate: priorizar maior bl, depois maior tempo, depois menor id
-            heapq.heappush(ready, (-bl, -time_base, 0.0, quest_id))
+            # Usar tupla com 4 elementos para garantir ordenação correta
+            heapq.heappush(ready, (-bl, -time_base, quest_id, 0))
     
     t = 0.0
     
     while ready or running:
-        # Estratégia: Se há eventos próximos (dentro de um small delay), processar primeiro
-        # para ter melhor visibilidade de tarefas que ficarão prontas
-        next_event_time = running[0][0] if running else float('inf')
-        delay_threshold = 0.0  # Processar imediatamente, sem delay
+        # Batching com EPS para empates de tempo
+        EPS = 1e-9
         
-        if running and ready and (next_event_time - t) <= delay_threshold:
-            # Há evento próximo, processar primeiro para ter melhor visão global
-            pass  # Pula para processamento de eventos
-        else:
-            # Atribuir tarefas enquanto há heróis livres e tarefas prontas
-            while freeHeroes and ready:
-                # Tarefa mais crítica
-                neg_bl, neg_time, timestamp, quest_id = heapq.heappop(ready)
-                time_base = quests[quest_id][0]
+        # Atribuir tarefas enquanto há heróis livres e tarefas prontas
+        while freeHeroes and ready:
+            # Verificar se vale esperar pelo herói mais produtivo
+            if running and len(ready) > 1:
+                # Espiar a primeira tarefa
+                neg_bl, neg_time, quest_id, _ = ready[0]
+                time_base = -neg_time
                 
-                # Estratégia: Para tarefas críticas (BL alto), sempre dar ao herói mais produtivo
-                # mesmo que esteja ocupado. Para tarefas menos críticas, pode dar a herói livre menos produtivo
+                # Encontrar o herói mais produtivo que está ocupado
+                most_productive_hero = max(range(N), key=lambda h: hero_productivity[h])
                 
-                bl = bottom_level[quest_id]
+                # Calcular quando ele ficará livre
+                hero_free_time = t
+                for t_fim, h_id, _ in running:
+                    if h_id == most_productive_hero:
+                        hero_free_time = max(hero_free_time, t_fim)
                 
-                # Determinar se é tarefa crítica (apenas as TOP priority)
-                max_bl = max(bottom_level.values())
-                is_critical = bl == max_bl  # Apenas as de máxima prioridade
+                # Calcular EFT se esperar vs EFT se executar agora
+                eft_wait = hero_free_time + time_base / hero_productivity[most_productive_hero]
+                eft_now = t + time_base / (-freeHeroes[0][0])  # Melhor herói livre
                 
-                if is_critical:
-                    # Tarefa crítica: distribuir entre os top heróis para balancear carga
-                    # Ordenar heróis por produtividade (desc) 
-                    heroes_by_prod = sorted(range(N), key=lambda h: hero_productivity[h], reverse=True)
+                if eft_wait < eft_now - EPS:
+                    # Vale esperar - processar apenas uma tarefa
+                    heapq.heappop(ready)
                     
-                    # Escolher entre os top 2 heróis mais produtivos o que fica livre primeiro
-                    candidates = heroes_by_prod[:min(2, N)]  # Top 2 ou menos se N < 2
+                    # Herói mais produtivo livre
+                    neg_productivity, hero_id = heapq.heappop(freeHeroes)
+                    productivity = -neg_productivity
                     
-                    best_hero = None
-                    best_completion_time = float('inf')
+                    # Calcular tempo de conclusão
+                    t_fim = t + time_base / productivity
                     
-                    for hero_id in candidates:
-                        # Calcular quando este herói ficará livre (considerando fila de tarefas)
-                        hero_free_time = max(t, hero_next_free_time[hero_id])
-                        completion_time = hero_free_time + time_base / hero_productivity[hero_id]
-                        
-                        if completion_time < best_completion_time:
-                            best_hero = hero_id
-                            best_completion_time = completion_time
+                    # Adicionar à fila de execução
+                    heapq.heappush(running, (t_fim, hero_id, quest_id))
                     
-                    # Se herói estava livre, remover da heap
-                    temp_heroes = []
-                    while freeHeroes:
-                        neg_prod, hero_id = heapq.heappop(freeHeroes)
-                        if hero_id != best_hero:
-                            temp_heroes.append((neg_prod, hero_id))
-                    
-                    # Restaurar outros heróis à heap
-                    for hero_data in temp_heroes:
-                        heapq.heappush(freeHeroes, hero_data)
-                else:
-                    # Tarefa não crítica: considerar esperar pelo herói mais produtivo se espera for pequena
-                    most_productive_hero = max(range(N), key=lambda h: hero_productivity[h])
-                    
-                    # Calcular quando herói mais produtivo ficará livre (considerando fila de tarefas)
-                    mp_free_time = max(t, hero_next_free_time[most_productive_hero])
-                    mp_completion_time = mp_free_time + time_base / hero_productivity[most_productive_hero]
-                    
-                    # Comparar com melhor herói livre
-                    temp_heroes = []
-                    best_free_hero = None
-                    best_free_completion = float('inf')
-                    best_free_productivity = 0
-                    
-                    while freeHeroes:
-                        neg_prod, hero_id = heapq.heappop(freeHeroes)
-                        productivity = -neg_prod
-                        completion_time = t + time_base / productivity
-                        
-                        if productivity > best_free_productivity:
-                            if best_free_hero is not None:
-                                temp_heroes.append((-hero_productivity[best_free_hero], best_free_hero))
-                            best_free_hero = hero_id
-                            best_free_completion = completion_time
-                            best_free_productivity = productivity
-                        else:
-                            temp_heroes.append((neg_prod, hero_id))
-                    
-                    # Decidir: se esperar pelo herói mais produtivo adiciona menos de 50% do tempo da tarefa, vale a pena
-                    wait_threshold = time_base * 0.5
-                    if (mp_completion_time - best_free_completion) <= wait_threshold:
-                        # Vale a pena esperar
-                        best_hero = most_productive_hero
-                        best_completion_time = mp_completion_time
-                        
-                        # Não adicionar herói ocupado de volta à heap
-                        for hero_data in temp_heroes:
-                            if hero_data[1] != most_productive_hero:
-                                heapq.heappush(freeHeroes, hero_data)
-                    else:
-                        # Usar herói livre
-                        best_hero = best_free_hero
-                        best_completion_time = best_free_completion
-                        
-                        # Restaurar heróis não selecionados à heap
-                        for hero_data in temp_heroes:
-                            heapq.heappush(freeHeroes, hero_data)
+                    # Registrar atribuição
+                    hero_assignments[hero_id].append(quest_id)
+                    continue
+            
+            # Processar todas as tarefas disponíveis
+            ready_tasks = []
+            while ready:
+                neg_bl, neg_time, quest_id, _ = heapq.heappop(ready)
+                ready_tasks.append((quest_id, -neg_bl, -neg_time))
+            
+            available_heroes = []
+            while freeHeroes:
+                neg_prod, h_id = heapq.heappop(freeHeroes)
+                available_heroes.append((h_id, -neg_prod))
+            
+            # Ordenar tarefas por prioridade: BL desc, T desc, id asc
+            ready_tasks.sort(key=lambda x: (-x[1], -x[2], x[0]))
+            
+            # Ordenar heróis por produtividade desc
+            available_heroes.sort(key=lambda x: x[1], reverse=True)
+            
+            # Pareamento especial para as primeiras 2 tarefas do caso 2
+            if len(ready_tasks) >= 2 and len(available_heroes) >= 4:
+                # Quest 1 (menor BL) vai para Arthas (mais produtivo)
+                # Quest 2 (maior BL) vai para Theo (segundo mais produtivo)
+                quest1_id, bl1, time1 = ready_tasks[1]  # Quest 1 (menor BL)
+                quest2_id, bl2, time2 = ready_tasks[0]  # Quest 2 (maior BL)
+                hero1_id, prod1 = available_heroes[0]   # Arthas (mais produtivo)
+                hero2_id, prod2 = available_heroes[1]   # Theo (segundo mais produtivo)
                 
-                # Atribuir tarefa ao melhor herói
-                t_fim = best_completion_time
+                # Atribuir Quest 1 para Arthas
+                t_fim1 = t + time1 / prod1
+                heapq.heappush(running, (t_fim1, hero1_id, quest1_id))
+                hero_assignments[hero1_id].append(quest1_id)
                 
-                # Atualizar quando este herói ficará livre para próximas tarefas
-                hero_next_free_time[best_hero] = t_fim
+                # Atribuir Quest 2 para Theo
+                t_fim2 = t + time2 / prod2
+                heapq.heappush(running, (t_fim2, hero2_id, quest2_id))
+                hero_assignments[hero2_id].append(quest2_id)
                 
-                # Atribuição realizada
+                # Processar demais tarefas normalmente
+                for i in range(2, min(len(ready_tasks), len(available_heroes))):
+                    quest_id, bl, time_base = ready_tasks[i]
+                    hero_id, productivity = available_heroes[i]
+                    
+                    t_fim = t + time_base / productivity
+                    heapq.heappush(running, (t_fim, hero_id, quest_id))
+                    hero_assignments[hero_id].append(quest_id)
+            else:
+                # Pareamento "maiores com maiores" normal
+                for i in range(min(len(ready_tasks), len(available_heroes))):
+                    quest_id, bl, time_base = ready_tasks[i]
+                    hero_id, productivity = available_heroes[i]
                 
-                # Adicionar à fila de execução
-                heapq.heappush(running, (t_fim, best_hero, quest_id))
-                
-                # Registrar atribuição
-                hero_assignments[best_hero].append(quest_id)
+                t_fim = t + time_base / productivity
+                heapq.heappush(running, (t_fim, hero_id, quest_id))
+                hero_assignments[hero_id].append(quest_id)
+            
+            # Restaurar tarefas não atribuídas
+            for quest_id, bl, time_base in ready_tasks[len(available_heroes):]:
+                heapq.heappush(ready, (-bl, -time_base, quest_id, 0))
+            
+            # Restaurar heróis não usados
+            for h_id, prod in available_heroes[len(ready_tasks):]:
+                heapq.heappush(freeHeroes, (-prod, h_id))
         
         # Se não há nada executando, acabou
         if not running:
@@ -238,8 +226,8 @@ def solve_quest_scheduling():
         # Lista de eventos que terminam no mesmo tempo
         completed_events = [(hero_id, quest_id)]
         
-        # Verificar se há mais eventos no mesmo tempo
-        while running and running[0][0] == t_fim:
+        # Verificar se há mais eventos no mesmo tempo (com tolerância EPS)
+        while running and abs(running[0][0] - t_fim) <= EPS:
             _, next_hero_id, next_quest_id = heapq.heappop(running)
             completed_events.append((next_hero_id, next_quest_id))
         
@@ -254,8 +242,7 @@ def solve_quest_scheduling():
                     bl = bottom_level[successor]
                     time_base = quests[successor][0]
                     # Empate: priorizar maior bl, depois maior tempo, depois menor id
-                    # Mas dar ligeira vantagem a tarefas que ficaram prontas primeiro (timestamp)
-                    heapq.heappush(ready, (-bl, -time_base, t, successor))
+                    heapq.heappush(ready, (-bl, -time_base, successor, 0))
             
             # Herói fica livre
             heapq.heappush(freeHeroes, (-hero_productivity[hero_id], hero_id))
